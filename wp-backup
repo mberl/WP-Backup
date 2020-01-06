@@ -56,16 +56,21 @@ fi
 
 }
 
-######################
-#		     #
-#  Initial function  #
-#		     #
-######################
+#############
+#           #
+#   Intro   #
+#           #
+#############
 
 function dialog_intro() {
 	$DIALOG	--backtitle "$BACKTITLE" \
   		--title "About" \
-		--msgbox "Welcome! This simple script let you backup your wordpress-site & database. \n\nRun the 'wp-restore' script to restore your backup. \n\nPress OK to continue" 10 80
+		--msgbox "Welcome! This simple script let you backup your wordpress-site (files & database). \n\nRun the 'wp-restore' script to restore your backup. \n\nPress OK to continue" 10 80
+}
+
+function intro() {
+
+echo "Welcome! This simple script let you backup your wordpress-site (files & database)."
 }
 
 
@@ -522,6 +527,7 @@ if [ ! "$1" ]; then
 	dialog_backup_db
 	
 elif [ "$1" ] && [ "$2" ]; then
+	intro
 	wpdir "$1"
 	odir "$2"
 	file_count
