@@ -1,0 +1,536 @@
+#!/bin/bash
+
+######################
+#		     #
+#  Global variables  #
+#		     #
+######################
+
+BACKTITLE="Wordpress Backup Script by Mads Berland"
+WPLOG="/tmp/wp-backup.$$.log"
+SQLFILE="database-backup.$$.sql"
+
+####################
+#		   #
+#  Clean up files  #
+#		   #
+####################
+
+function cleanup_err() {
+
+if [ $WPLOG ] && [ -f "$WPLOG" ]; then
+	rm -f "$WPLOG" 2> /dev/null
+fi
+
+if [ $SQLFILE ] && [ -f "/tmp/$SQLFILE" ]; then
+	rm -f "/tmp/$SQLFILE" 2> /dev/null
+fi
+
+if [ $AFILE ]; then
+       	rm -f $AFILE 2> /dev/null
+fi
+
+echo "Cleaning up files done.  Exiting .." 
+
+exit 2
+
+}
+
+###########################
+#			  #
+#  Dialog program to use  #
+# 			  #
+###########################
+
+function dialog_check() {
+
+DIALOG=${DIALOG=dialog}
+
+if [[ ! -x /usr/bin/dialog ]] && [[ ! -x /bin/dialog ]]; then
+	echo -e "You need to have 'dialog' installed on the system to use the 'dialog box' version of the script."
+	echo -e "To install under Debian or Ubuntu type: sudo apt-get install dialog"
+	echo -e "If you are using CentOS or Redhat type: yum install dialog\n"
+	echo -e "To use the script without. Use syntax: $0 [wordpress dir] [output dir]"
+	exit 2;
+fi
+
+}
+
+######################
+#		     #
+#  Initial function  #
+#		     #
+######################
+
+function dialog_intro() {
+	$DIALOG	--backtitle "$BACKTITLE" \
+  		--title "About" \
+		--msgbox "Welcome! This simple script let you backup your wordpress-site & database. \n\nRun the 'wp-restore' script to restore your backup. \n\nPress OK to continue" 10 80
+}
+
+
+#########################################################
+#					    		#
+#  Where to save the backup file? (tar.gz or zip file)  #
+#					    		#
+#########################################################
+
+function dialog_odir() {
+
+WP_ODIR=`$DIALOG --backtitle "$BACKTITLE" --stdout --title "Where to store the backup?" --dselect $HOME/ 14 48`
+
+case $? in
+	1)
+		echo "Cancel pressed.  Exiting ..."
+		exit 2;;
+	255)
+		echo "Box closed.  Exiting ..."
+		exit 2;;
+esac
+
+# Remove the last '/'
+WP_ODIR=$(echo $WP_ODIR | sed -e 's/\/$//')
+
+# Check for write permission
+if [[ ! -w $WP_ODIR ]]; then
+	$DIALOG	--backtitle "$BACKTITLE" --title "Error" --msgbox "Write permission denied ($WP_ODIR)\n\nPress OK to change folder" 7 70
+	dialog_odir
+fi 
+
+}
+
+function odir() {
+
+WP_ODIR=$1
+
+# Check for write permission
+if [[ ! -w $WP_ODIR ]]; then
+	echo "Write permission denied ($WP_ODIR)"
+	echo "Exiting .."
+	exit 2
+fi 
+
+}
+
+
+#########################################
+#					#
+#  Select path to wordpress direcotory  #
+#					#
+#########################################
+
+function dialog_wpdir() {
+
+WP_DIR=`$DIALOG --backtitle "$BACKTITLE" --stdout --title "Select path to your main wordpress directory" --dselect $HOME 14 48`
+#WP_DIR=`$DIALOG --backtitle "$BACKTITLE" --stdout --title "Select path to your main wordpress directory" --dselect "/var/www/html/stream" 14 48`
+
+case $? in
+	1)
+		echo "Cancel pressed.  Exiting ..."
+		exit 2;;
+	255)
+		echo "Box closed.  Exiting ..."
+		exit 2;;
+esac
+
+# Go to dir
+cd $WP_DIR 2> /dev/null
+
+# Check whether the path is a wordpress directory or not
+if [ ! -f "wp-config.php" ]; then 
+	$DIALOG --backtitle "$BACKTITLE" \
+        	--title "Error" \
+        	--msgbox "Path '$WP_DIR' is not a wordpress directory. File 'wp-config' is missing.\n\nPress OK to change folder" 8 70
+	dialog_wpdir
+fi
+
+}
+
+function wpdir() {
+
+WP_DIR=$1
+
+# Go to dir
+cd $WP_DIR 2> /dev/null
+	
+# Check whether the path is a wordpress directory or not
+if [ ! -f "wp-config.php" ]; then 
+	echo "Path '$WP_DIR' is not a wordpress directory. File 'wp-config' is missing."
+	echo "Exiting .."
+	exit 2
+fi
+
+
+}
+
+function file_count() {
+
+# Count all files in wordpress directory
+files_i=0;
+
+for f in $(find $WP_DIR); do
+	files_i=$((files_i+1))
+done
+
+# Put wordpress main files in FILES_WP
+
+i=0;
+for f in $(ls -A); do 
+	if [[ $f =~ wp-content$ ]]; then
+		continue
+	fi
+
+	FILES[$i]=$f
+
+	i=$((i+1))
+done
+
+# Put files in wp-content in FILES_CONTENT
+
+for f in wp-content/*; do 
+	FILES[$i]=$f
+
+	i=$((i+1))
+done
+
+}
+
+#######################################################################
+#								      #
+#  Show files in wordpress dir & select between tar.gz or zip backup  #
+#								      #
+#######################################################################
+
+function dialog_archive_type() {
+
+ATYPE=$(dialog --backtitle "$BACKTITLE" \
+	--menu "Found $files_i files in $WP_DIR\n\nSelect the format you prefer for the backup:" 10 50 0 \
+       	1 "Tar.gz" \
+	2 "Zip" 2>&1 >/dev/tty)
+
+case $? in
+	1)
+		echo "Cancel pressed.  Exiting ..."
+		exit 2;;
+	255)
+		echo "Box closed.  Exiting ..."
+		exit 2;;
+esac
+
+if [ $ATYPE -eq 1 ]; then 
+	AFILE="$WP_ODIR/WP_Backup_$(date +%Y-%m-%d_%H%M%S).tar.gz"
+else
+	AFILE="$WP_ODIR/WP_Backup_$(date +%Y-%m-%d_%H%M%S).zip"
+fi
+
+}
+
+function archive_type() {
+
+echo "Select the format you prefer for the backup:"
+
+PS3='Please enter your choice: '
+select ATYPE in "Tar.gz" "Zip"; do
+
+	case $ATYPE in
+		"Tar.gz")
+			ATYPE=1
+			AFILE="$WP_ODIR/WP_Backup_$(date +%Y-%m-%d_%H%M%S).tar.gz"
+			break;;
+		"Zip")
+			ATYPE=2
+			AFILE="$WP_ODIR/WP_Backup_$(date +%Y-%m-%d_%H%M%S).zip"
+			break;;
+		*)
+			echo "Invalid option $REPLY"
+	esac 
+
+done
+
+}
+
+###########################
+#			  #
+#  Start backuping files  #               
+#			  # 
+###########################
+
+function dialog_backup_files() {
+
+
+n=${#FILES[*]}; 
+i=0
+
+$DIALOG --backtitle "$BACKTITLE" --title "File Backup" --gauge "\nBackuping file..." 10 150 < <(
+
+   	for f in "${FILES[@]}"
+   	do
+      	# calculate progress
+      	PCT=$(( 100*(++i)/n ))
+
+      	# update dialog box 
+cat <<EOF
+XXX
+$PCT
+\nBackuping $f ...
+XXX
+EOF
+	if [ $ATYPE -eq 1 ]; then 
+		#ERR_MSG=$(tar rf "/root/we.tar.gz" "$f" 2>&1)
+		ERR_MSG=$(tar rf "$AFILE" "$f" 2>&1)
+	else
+		ERR_MSG=$(zip -grq "$AFILE" "$f" 2>&1)
+	fi
+
+	# Check for errors (save them to logfile)
+	if [ $? -ne 0 ]; then
+		echo $ERR_MSG > $WPLOG
+	fi
+
+	done
+)
+
+# Show errors & exit
+if [ -f $WPLOG ]; then
+	$DIALOG	--backtitle "$BACKTITLE" \
+		--title "Error" \
+		--exit-label "Abort" \
+		--textbox "$WPLOG" 0 0 
+
+	cleanup_err
+fi
+
+# Show complete dialog if no errors
+$DIALOG	--backtitle "$BACKTITLE" \
+	--title "File Backup" \
+	--msgbox "Backuping files completed ...\n\nPress OK to take backup of the database." 0 0 
+}
+
+function backup_files() {
+
+n=${#FILES[*]}; 
+i=0
+
+echo -n "Please wait. Backuping files: "
+
+for f in "${FILES[@]}";   do
+      	# calculate progress
+      	PCT=$(( 100*(++i)/n ))
+
+	echo -n "|"
+
+	if [ $ATYPE -eq 1 ]; then 
+		#ERR_MSG=$(tar rf "/root/we.tar.gz" "$f" 2>&1)
+		ERR_MSG=$(tar rf "$AFILE" "$f" 2>&1)
+	else
+		ERR_MSG=$(zip -grq "$AFILE" "$f" 2>&1)
+	fi
+
+	# Check for errors (save them to logfile)
+	if [ $? -ne 0 ]; then
+		echo $ERR_MSG > $WPLOG
+	fi
+
+done
+
+# Show errors & exit
+if [ -f $WPLOG ]; then
+	echo ""
+	echo -n "Error backuping files. Do you want to see the log? [yes/NO]: "
+
+	read answer
+	case $answer in
+		[Yy][Ee][Ss]|[Yy]) echo "------------- ERROR LOG --------------------"; cat $WPLOG; 
+				   echo "------------- END OF LOG -------------------";; 
+	esac
+	
+	cleanup_err
+fi
+
+# Show complete message if no errors
+
+echo " 100%"
+echo "Backuping files completed ... "
+echo "Press ENTER to take backup of your database (Using SQL-data from 'wp-config.php' in '$WP_DIR' directory)" 
+read
+
+}
+
+#################################
+#		         	#
+#  Prepare for database backup  #
+#		    		#
+#################################
+
+
+function prepare_backup_db() {
+
+MYSQL_DB="$(grep -o "define('DB_NAME', '.*');" wp-config.php | grep -o ", .*" | grep -o "'.*'" | sed -e "s/'//g")"
+MYSQL_USER="$(grep -o "define('DB_USER', '.*');" wp-config.php | grep -o ", .*" | grep -o "'.*'" | sed -e "s/'//g")"
+MYSQL_PASSWORD="$(grep -o "define('DB_PASSWORD', '.*');" wp-config.php | grep -o ", .*" | grep -o "'.*'" | sed -e "s/'//g")"
+MYSQL_HOST="$(grep -o "define('DB_HOST', '.*');" wp-config.php | grep -o ", .*" | grep -o "'.*'" | sed -e "s/'//g")"
+MYSQL_PREFIX="$(grep -o "table_prefix.*" wp-config.php  | grep -o "'.*'" | sed -e "s/'//g")"
+
+}
+
+function dialog_backup_db() {
+
+VALUES=$(dialog --ok-label "Submit" \
+   	  --backtitle "$BACKTITLE" \
+          --title "Database Backup" \
+          --form "Using SQL-data from 'wp-config'. Edit if needed." \
+15 55 0 \
+        "MySQL Database:"       1 2     "$MYSQL_DB"         1 19 30 0 \
+        "MySQL Username:"       2 2     "$MYSQL_USER"       2 19 30 0 \
+        "MySQL Password:"       3 2     "$MYSQL_PASSWORD"   3 19 30 0 \
+        "MysQL Host:"           4 2     "$MYSQL_HOST"       4 19 30 0 \
+        "Table prefix:"         5 2     "$MYSQL_PREFIX"     5 19 30 0 \
+2>&1 1>/dev/tty); 
+
+case $? in
+	1)
+		echo "Cancel pressed."
+		cleanup_err;;
+	255)
+		echo "Box closed."
+		cleanup_err;;
+esac
+
+unset TMP_A
+
+for s in $VALUES; do
+	TMP_A[${#TMP_A[@]}]=$s
+done
+
+
+if [ -z ${TMP_A[4]} ]; then 
+	$DIALOG --backtitle "$BACKTITLE" \
+        	--title "Error" \
+        	--msgbox "Fields are missing\n\nPress OK to edit settings again.\n\n" 7 70
+	dialog_backup_db
+	exit 2
+fi
+
+
+# Update info
+MYSQL_DB=${TMP_A[0]}
+MYSQL_USER=${TMP_A[1]}
+MYSQL_PASSWORD=${TMP_A[2]}
+MYSQL_HOST=${TMP_A[3]}
+MYSQL_PREFIX=${TMP_A[4]}
+
+cd /tmp
+
+$DIALOG	--backtitle "$BACKTITLE" \
+	--title "Database Backup" \
+	--infobox "Please wait. Backuping database ..." 4 50
+
+mysql $MYSQL_DB -u $MYSQL_USER -h $MYSQL_HOST -p$MYSQL_PASSWORD -N -e 'show tables like "$MYSQL_PREFIX%"' |  xargs mysqldump $MYSQL_DB -u $MYSQL_USER -h $MYSQL_HOST -p$MYSQL_PASSWORD > "$SQLFILE" 2>&1
+
+if [ $? -ne 0 ]; then
+	$DIALOG --backtitle "$BACKTITLE" \
+        	--title "Error" \
+		--exit-label "Try again" \
+		--textbox "$SQLFILE" 0 80
+	rm -f $SQLFILE 2> /dev/null
+	dialog_backup_db
+	exit 2
+fi
+
+if [ $ATYPE -eq 1 ]; then 
+	ERR_MSG=$(tar rf "$AFILE" "$SQLFILE" 2>&1)
+else
+	ERR_MSG=$(zip -grq "$AFILE" "$SQLFILE" 2>&1)
+fi
+
+if [ $? -eq 0 ]; then
+	$DIALOG	--backtitle "$BACKTITLE" \
+		--title "Database Backup" \
+		--msgbox "Backuping database completed ...\n\nFile $AFILE is ready.\n\nPress OK to close the dialog." 10 80
+else
+	$DIALOG --backtitle "$BACKTITLE" \
+        	--title "Error" \
+		--ok-label "Exit" \
+		--msgbox "$ERR_MSG" 10 80
+
+	cleanup_err
+fi
+
+# clean tmp file
+rm -f $SQLFILE 2> /dev/null
+
+
+}
+
+function backup_db() {
+
+cd /tmp
+
+echo "Please wait. Backuping database ..."
+
+mysql $MYSQL_DB -u $MYSQL_USER -h $MYSQL_HOST -p$MYSQL_PASSWORD -N -e 'show tables like "$MYSQL_PREFIX%"' 2>/dev/null |  xargs mysqldump $MYSQL_DB -u $MYSQL_USER -h $MYSQL_HOST -p$MYSQL_PASSWORD > "$SQLFILE" 2>&1 
+
+if [ $? -ne 0 ]; then
+	echo "Could not connect to MySQL-databasse: "
+	cat $SQLFILE
+	cleanup_err
+fi
+
+if [ $ATYPE -eq 1 ]; then 
+	ERR_MSG=$(tar rf "$AFILE" "$SQLFILE" 2>&1)
+else
+	ERR_MSG=$(zip -grq "$AFILE" "$SQLFILE" 2>&1)
+fi
+
+if [ $? -eq 0 ]; then
+	echo "Backuping database completed ..."
+	echo "File $AFILE is ready."
+else
+	echo ""
+	echo -n "Error backuping database. Do you want to see the log? [yes/NO]: "
+
+	read answer
+	case $answer in
+		[Yy][Ee][Ss]|[Yy]) echo "------------- ERROR LOG --------------------"; echo $ERR_MSG; 
+				   echo "------------- END OF LOG -------------------";; 
+	esac
+	
+	cleanup_err
+fi
+
+# clean tmp file
+rm -f $SQLFILE 2> /dev/null
+
+
+}
+
+############################################
+###	 		                 ###
+###  RUN SCRIPT WITH OR WITHOUT DIALOG   ###
+###		        		 ###
+############################################
+
+if [ ! "$1" ]; then
+	dialog_check
+	dialog_intro
+	dialog_wpdir
+	dialog_odir
+	file_count
+	dialog_archive_type
+	dialog_backup_files
+	prepare_backup_db
+	dialog_backup_db
+	
+elif [ "$1" ] && [ "$2" ]; then
+	wpdir "$1"
+	odir "$2"
+	file_count
+	archive_type
+	backup_files
+	prepare_backup_db
+	backup_db
+
+else
+	echo "Too few arguments. Use syntax: $0 [wordpress dir] [output dir]"
+	echo "To use the 'dialog box' version of this script. Just run $0 without arguments."
+fi
